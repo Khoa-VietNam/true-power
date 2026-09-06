@@ -24,22 +24,42 @@ import java.util.stream.Collectors;
 
 public final class CustomEarlyResourceLoader {
     public static void load(List<PreparableReloadListener> listeners) {
-        List<PackResources> packs = new ArrayList<>();
         LoadingModList loadingModList = LoadingModList.get();
+        // Avoid running this custom loader when Forgified Fabric API / Fabric API connector is present
+        // They modify resource reload internals and can cause incompatibilities.
+        if (loadingModList.getModFileById("forgifiedfabricapi") != null
+            || loadingModList.getModFileById("fabric-api") != null
+            || loadingModList.getModFileById("connector") != null) {
+            TruePowerMod.LOGGER.warn("Forgified/Fabric API detected - skipping CustomEarlyResourceLoader to avoid incompatibility.");
+            return;
+        }
+
+        List<PackResources> packs = new ArrayList<>();
         for (IModFileInfo modFileInfo : loadingModList.getModFiles()) {
-            packs.add(ResourcePackLoader.createPackForMod(modFileInfo)
-                .openPrimary(new PackLocationInfo("mod/" + modFileInfo.getMods().getFirst().getModId(),
-                    Component.empty(), PackSource.BUILT_IN, Optional.empty())));
+            try {
+                packs.add(ResourcePackLoader.createPackForMod(modFileInfo)
+                    .openPrimary(new PackLocationInfo("mod/" + modFileInfo.getMods().getFirst().getModId(),
+                        Component.empty(), PackSource.BUILT_IN, Optional.empty())));
+            } catch (Exception e) {
+                TruePowerMod.LOGGER.warn("Failed to create resource pack for mod {}", modFileInfo.getMods().getFirst().getModId(), e);
+            }
         }
         if (packs.isEmpty()) {
             return;
         }
         try (ReloadableResourceManager resourceManager = new CustomServerResourceManager(packs)) {
-            listeners.forEach(resourceManager::registerReloadListener);
-            ReloadInstance reloadInstance = resourceManager.createReload(
-                Runnable::run, Runnable::run,
-                CompletableFuture.completedFuture(Unit.INSTANCE), packs);
-            reloadInstance.done();
+            try {
+                listeners.forEach(resourceManager::registerReloadListener);
+                ReloadInstance reloadInstance = resourceManager.createReload(
+                    Runnable::run, Runnable::run,
+                    CompletableFuture.completedFuture(Unit.INSTANCE), packs);
+                reloadInstance.done();
+            } catch (Throwable t) {
+                // Don't let resource reload issues prevent the mod from loading. Log and continue.
+                TruePowerMod.LOGGER.warn("CustomEarlyResourceLoader aborted due to error while reloading resources", t);
+            }
+        } catch (Exception e) {
+            TruePowerMod.LOGGER.warn("CustomEarlyResourceLoader could not create resource manager, skipping.", e);
         }
     }
     
